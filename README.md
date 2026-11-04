@@ -68,9 +68,9 @@ TypeScript · Node.js 22 · `jsonwebtoken` · `nodemailer` · `@aws-sdk/client-s
 
 ## Dependências entre repositórios
 
-Depende de [`tc3-infra-k8s`](https://github.com/tiagostorch/tc3-infra-k8s) (rede/VPC, cluster, bootstrap OIDC), lido via `terraform_remote_state`. **Aplique-o antes.** O prefixo do SSM (`/tc3-oficina/homolog`) é montado aqui a partir de `project_name` e `environment`, os mesmos valores das outras stacks.
+Depende de [`tc3-infra-k8s`](https://github.com/fiap-soat-oficina-tech-challenge/tc3-infra-k8s) (rede/VPC, cluster, bootstrap OIDC), lido via `terraform_remote_state`. **Aplique-o antes.** O prefixo do SSM (`/tc3-oficina/homolog`) é montado aqui a partir de `project_name` e `environment`, os mesmos valores das outras stacks.
 
-> **Em runtime**, a autenticação depende do OS Service ([`tech-challenge-fiap`](https://github.com/LucasValada/tech-challenge-fiap)) no ar e do parâmetro `INTERNAL_API_TOKEN`, gerado pelo `terraform/` daquele repositório. Os dois são lidos na invocação, não no `apply`, então a ordem de aplicação não muda.
+> **Em runtime**, a autenticação depende do OS Service ([`tech-challenge-fiap`](https://github.com/fiap-soat-oficina-tech-challenge/tech-challenge-fiap)) no ar e do parâmetro `INTERNAL_API_TOKEN`, gerado pelo `terraform/` daquele repositório. Os dois são lidos na invocação, não no `apply`, então a ordem de aplicação não muda.
 
 > **Rota `ANY /{proxy+}`:** o ALB dos serviços é criado pelo AWS Load Balancer Controller no primeiro deploy de um Ingress do grupo `oficina`, e o Terraform o encontra pelas tags (`elbv2.k8s.aws/cluster` e `ingress.k8s.aws/stack`). Num ambiente novo, o primeiro `apply` sobe só `/auth` e `/mail` e publica o `API_GATEWAY_URL`, que os deploys dos serviços leem; depois dos deploys, um segundo `apply` cria o VPC Link e a rota. Não há ARN para copiar.
 
@@ -142,7 +142,7 @@ Dois campos opcionais permitem um e-mail com imagem — o Billing manda assim o 
 | `405` | Método diferente de `POST` |
 | `500` | Falha ao ler a config no SSM ou ao enviar via SMTP |
 
-> Quem chama esta rota é a **API da oficina**, de forma **best-effort**: uma falha aqui é logada, mas não bloqueia a transição de status da OS. Detalhe da integração no README do repo [`tech-challenge-fiap`](https://github.com/LucasValada/tech-challenge-fiap#notificações-por-e-mail-lambda).
+> Quem chama esta rota é a **API da oficina**, de forma **best-effort**: uma falha aqui é logada, mas não bloqueia a transição de status da OS. Detalhe da integração no README do repo [`tech-challenge-fiap`](https://github.com/fiap-soat-oficina-tech-challenge/tech-challenge-fiap#notificações-por-e-mail-lambda).
 
 ---
 
@@ -211,7 +211,7 @@ curl -si -X POST "$(terraform -chdir=infra output -raw auth_url)" \
   -H 'content-type: application/json' -d '{"cpf":"<cpf>"}' | grep -i traceresponse
 ```
 
-A ARN da layer muda por região e versão do agente e vai em `newrelic_layer_arn` (lista em <https://layers.newrelic-external.com>). O detalhamento — tabela completa de variáveis e NRQL — está em [`tc3-infra-k8s/OBSERVABILIDADE.md`](https://github.com/tiagostorch/tc3-infra-k8s/blob/main/OBSERVABILIDADE.md).
+A ARN da layer muda por região e versão do agente e vai em `newrelic_layer_arn` (lista em <https://layers.newrelic-external.com>). O detalhamento — tabela completa de variáveis e NRQL — está em [`tc3-infra-k8s/OBSERVABILIDADE.md`](https://github.com/fiap-soat-oficina-tech-challenge/tc3-infra-k8s/blob/main/OBSERVABILIDADE.md).
 
 ## Decisões registradas
 
@@ -221,4 +221,4 @@ A ARN da layer muda por região e versão do agente e vai em `newrelic_layer_arn
 - **SMTP na Lambda de e-mail, config no SSM** — isola o provedor de e-mail da aplicação; trocar Ethereal por SES não toca no código do app.
 - **Token interno na rota `/mail`** (`x-mail-api-token`, `timingSafeEqual`) — a rota não é pública; só a API com o token do SSM a chama.
 
-Estas decisões viram ADRs na documentação oficial da entrega (repo [`tech-challenge-fiap`](https://github.com/LucasValada/tech-challenge-fiap)).
+Estas decisões viram ADRs na documentação oficial da entrega (repo [`tech-challenge-fiap`](https://github.com/fiap-soat-oficina-tech-challenge/tech-challenge-fiap)).
