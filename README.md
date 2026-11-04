@@ -68,7 +68,7 @@ TypeScript · Node.js 22 · `pg` · `jsonwebtoken` · `nodemailer` · `@aws-sdk/
 
 ## Dependências entre repositórios
 
-Depende de [`tc3-infra-k8s`](https://github.com/tiagostorch/tc3-infra-k8s) (rede/VPC, ALB, bootstrap OIDC) e de [`tc3-infra-db`](https://github.com/tiagostorch/tc3-infra-db) (banco, `DATABASE_URL` e o **prefixo do SSM**), lidos via `terraform_remote_state`. **Aplique os dois antes.**
+Depende de [`tc3-infra-k8s`](https://github.com/fiap-soat-oficina-tech-challenge/tc3-infra-k8s) (rede/VPC, ALB, bootstrap OIDC) e de [`tc3-infra-db`](https://github.com/fiap-soat-oficina-tech-challenge/tc3-infra-db) (banco, `DATABASE_URL` e o **prefixo do SSM**), lidos via `terraform_remote_state`. **Aplique os dois antes.**
 
 > **Pré-requisito de schema:** a coluna `status` em `Cliente` precisa existir (ajuste de modelagem desta fase, feito no repo [`tech-challenge-fiap`](https://github.com/LucasValada/tech-challenge-fiap)). Sem ela a consulta da Lambda de auth falha.
 
@@ -192,7 +192,7 @@ curl -si -X POST "$(terraform -chdir=infra output -raw auth_url)" \
   -H 'content-type: application/json' -d '{"cpf":"<cpf>"}' | grep -i traceresponse
 ```
 
-A ARN da layer muda por região e versão do agente e vai em `newrelic_layer_arn` (lista em <https://layers.newrelic-external.com>). O detalhamento — tabela completa de variáveis e NRQL — está em [`tc3-infra-k8s/OBSERVABILIDADE.md`](https://github.com/tiagostorch/tc3-infra-k8s/blob/main/OBSERVABILIDADE.md).
+A ARN da layer muda por região e versão do agente e vai em `newrelic_layer_arn` (lista em <https://layers.newrelic-external.com>). O detalhamento — tabela completa de variáveis e NRQL — está em [`tc3-infra-k8s/OBSERVABILIDADE.md`](https://github.com/fiap-soat-oficina-tech-challenge/tc3-infra-k8s/blob/main/OBSERVABILIDADE.md).
 
 ## Decisões registradas
 
