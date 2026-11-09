@@ -1,13 +1,23 @@
 # tc3-auth-lambda
 
-Repositório de **funções serverless** do Tech Challenge Fase 3 (FIAP SOAT) — sistema de gestão de oficina mecânica. É um dos **4 repositórios** da solução e a **porta de entrada** de toda a aplicação: além das funções, provisiona o **API Gateway** que roteia o tráfego para elas e para a API no cluster.
+Repositório de **funções serverless** do sistema de gestão de oficina mecânica do Tech Challenge FIAP SOAT. Criado na Fase 3, é um dos **cinco repositórios** da solução da Fase 4 e a **porta de entrada** de toda a aplicação: além das funções, provisiona o **API Gateway** que roteia o tráfego para elas e para os três microsserviços no cluster.
+
+A visão geral da solução (os cinco repositórios, o diagrama da arquitetura, a divisão dos serviços e a Saga) está no [README do OS Service](https://github.com/fiap-soat-oficina-tech-challenge/tech-challenge-fiap#a-solução-na-fase-4).
+
+| Repositório | Papel |
+|---|---|
+| [`tech-challenge-fiap`](https://github.com/fiap-soat-oficina-tech-challenge/tech-challenge-fiap) | OS Service e orquestrador da Saga |
+| [`oficina-billing-service`](https://github.com/fiap-soat-oficina-tech-challenge/oficina-billing-service) | Billing Service |
+| [`oficina-execution-service`](https://github.com/fiap-soat-oficina-tech-challenge/oficina-execution-service) | Execution Service |
+| [`tc3-infra-k8s`](https://github.com/fiap-soat-oficina-tech-challenge/tc3-infra-k8s) | Plataforma: VPC, EKS, observabilidade e o workflow do ambiente |
+| **`tc3-auth-lambda`** (este) | API Gateway e Lambdas de autenticação e de e-mail |
 
 Contém **duas** AWS Lambda, atrás do **mesmo API Gateway**:
 
 | Função | Rota | Papel |
 |---|---|---|
 | **Autenticação por CPF** | `POST /auth` | Valida o CPF, confirma no **OS Service** que o cliente existe e está **ATIVO** e devolve um **JWT** aceito pelos serviços da oficina. |
-| **Notificações por e-mail** | `POST /mail` | Recebe uma solicitação autenticada da API e envia o e-mail (orçamento, finalização, entrega) via **SMTP**. Isola o SMTP fora da aplicação — é a peça "serverless de notificações" da fase. |
+| **Notificações por e-mail** | `POST /mail` | Recebe uma solicitação autenticada de um serviço e envia o e-mail via **SMTP**: orçamento e QR Code de pagamento (Billing), finalização e entrega (OS). Isola o SMTP fora dos serviços. |
 
 As rotas protegidas da aplicação também passam por este API Gateway (`ANY /{proxy+}` → ALB via VPC Link). Na Fase 4, o mesmo ALB atende os três microsserviços: o OS Service nas rotas sem prefixo, o Billing em `/billing` e o Execution em `/execution`.
 
@@ -68,9 +78,9 @@ TypeScript · Node.js 22 · `jsonwebtoken` · `nodemailer` · `@aws-sdk/client-s
 
 ## Dependências entre repositórios
 
-Depende de [`tc3-infra-k8s`](https://github.com/tiagostorch/tc3-infra-k8s) (rede/VPC, cluster, bootstrap OIDC), lido via `terraform_remote_state`. **Aplique-o antes.** O prefixo do SSM (`/tc3-oficina/homolog`) é montado aqui a partir de `project_name` e `environment`, os mesmos valores das outras stacks.
+Depende de [`tc3-infra-k8s`](https://github.com/fiap-soat-oficina-tech-challenge/tc3-infra-k8s) (rede/VPC, cluster, bootstrap OIDC), lido via `terraform_remote_state`. **Aplique-o antes.** O prefixo do SSM (`/tc3-oficina/homolog`) é montado aqui a partir de `project_name` e `environment`, os mesmos valores das outras stacks.
 
-> **Em runtime**, a autenticação depende do OS Service ([`tech-challenge-fiap`](https://github.com/LucasValada/tech-challenge-fiap)) no ar e do parâmetro `INTERNAL_API_TOKEN`, gerado pelo `terraform/` daquele repositório. Os dois são lidos na invocação, não no `apply`, então a ordem de aplicação não muda.
+> **Em runtime**, a autenticação depende do OS Service ([`tech-challenge-fiap`](https://github.com/fiap-soat-oficina-tech-challenge/tech-challenge-fiap)) no ar e do parâmetro `INTERNAL_API_TOKEN`, gerado pelo `terraform/` daquele repositório. Os dois são lidos na invocação, não no `apply`, então a ordem de aplicação não muda.
 
 > **Rota `ANY /{proxy+}`:** o ALB dos serviços é criado pelo AWS Load Balancer Controller no primeiro deploy de um Ingress do grupo `oficina`, e o Terraform o encontra pelas tags (`elbv2.k8s.aws/cluster` e `ingress.k8s.aws/stack`). Num ambiente novo, o primeiro `apply` sobe só `/auth` e `/mail` e publica o `API_GATEWAY_URL`, que os deploys dos serviços leem; depois dos deploys, um segundo `apply` cria o VPC Link e a rota. Não há ARN para copiar.
 
@@ -142,7 +152,7 @@ Dois campos opcionais permitem um e-mail com imagem — o Billing manda assim o 
 | `405` | Método diferente de `POST` |
 | `500` | Falha ao ler a config no SSM ou ao enviar via SMTP |
 
-> Quem chama esta rota é a **API da oficina**, de forma **best-effort**: uma falha aqui é logada, mas não bloqueia a transição de status da OS. Detalhe da integração no README do repo [`tech-challenge-fiap`](https://github.com/LucasValada/tech-challenge-fiap#notificações-por-e-mail-lambda).
+> Quem chama esta rota são o **OS Service** e o **Billing Service**, de forma **best-effort**: uma falha aqui é logada, mas não bloqueia a transição de status da OS nem a operação do orçamento. Detalhe da integração no README do repo [`tech-challenge-fiap`](https://github.com/fiap-soat-oficina-tech-challenge/tech-challenge-fiap#notificações-por-e-mail-lambda).
 
 ---
 
@@ -189,6 +199,8 @@ Endereços saem nos outputs (`terraform output`):
 
 > **Ambiente único:** `develop` e `main` aplicam no **mesmo** ambiente na AWS (mesmo state e recursos) — a distinção homologação/produção é apenas o rótulo do deploy no GitHub e foi desconsiderada.
 
+A `main` é protegida: merge apenas via Pull Request, com uma aprovação e os checks `Lint & Test` e `Terraform Plan` verdes. Na subida completa do ambiente, este Terraform também é aplicado pelo workflow **Ambiente** do [`tc3-infra-k8s`](https://github.com/fiap-soat-oficina-tech-challenge/tc3-infra-k8s#subir-e-derrubar-o-ambiente-inteiro), depois da plataforma.
+
 Secrets necessários: `AWS_ROLE_ARN` e `TF_STATE_BUCKET` (do bootstrap em `tc3-infra-k8s`) e `NEW_RELIC_ACCOUNT_ID`. A ARN da layer do New Relic entra como *variable* do repositório (`NEWRELIC_LAYER_ARN`) — é valor público. A **license key** não passa pelo CI nem pelo Terraform: a função recebe só o **nome** do parâmetro no SSM (`NEW_RELIC_LICENSE_KEY_SSM_PARAMETER_NAME`) e a extension lê a chave em runtime.
 
 Localmente, os valores ficam no `.env` da raiz (ignorado pelo git): `set -a; source .env; set +a` antes do `terraform plan`.
@@ -211,7 +223,7 @@ curl -si -X POST "$(terraform -chdir=infra output -raw auth_url)" \
   -H 'content-type: application/json' -d '{"cpf":"<cpf>"}' | grep -i traceresponse
 ```
 
-A ARN da layer muda por região e versão do agente e vai em `newrelic_layer_arn` (lista em <https://layers.newrelic-external.com>). O detalhamento — tabela completa de variáveis e NRQL — está em [`tc3-infra-k8s/OBSERVABILIDADE.md`](https://github.com/tiagostorch/tc3-infra-k8s/blob/main/OBSERVABILIDADE.md).
+A ARN da layer muda por região e versão do agente e vai em `newrelic_layer_arn` (lista em <https://layers.newrelic-external.com>). O detalhamento — tabela completa de variáveis e NRQL — está em [`tc3-infra-k8s/OBSERVABILIDADE.md`](https://github.com/fiap-soat-oficina-tech-challenge/tc3-infra-k8s/blob/main/OBSERVABILIDADE.md).
 
 ## Decisões registradas
 
@@ -221,4 +233,4 @@ A ARN da layer muda por região e versão do agente e vai em `newrelic_layer_arn
 - **SMTP na Lambda de e-mail, config no SSM** — isola o provedor de e-mail da aplicação; trocar Ethereal por SES não toca no código do app.
 - **Token interno na rota `/mail`** (`x-mail-api-token`, `timingSafeEqual`) — a rota não é pública; só a API com o token do SSM a chama.
 
-Estas decisões viram ADRs na documentação oficial da entrega (repo [`tech-challenge-fiap`](https://github.com/LucasValada/tech-challenge-fiap)).
+A estratégia de autenticação completa, com alternativas e riscos, está na [RFC-001](https://github.com/fiap-soat-oficina-tech-challenge/tech-challenge-fiap/blob/main/docs/rfc/RFC-001-estrategia-autenticacao.md) do repositório do OS Service.
