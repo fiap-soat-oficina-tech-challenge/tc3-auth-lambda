@@ -1,15 +1,25 @@
 # tc3-auth-lambda
 
-Repositório de **funções serverless** do Tech Challenge Fase 3 (FIAP SOAT) — sistema de gestão de oficina mecânica. É um dos **4 repositórios** da solução e a **porta de entrada** de toda a aplicação: além das funções, provisiona o **API Gateway** que roteia o tráfego para elas e para a API no cluster.
+Repositório de **funções serverless** do sistema de gestão de oficina mecânica do Tech Challenge FIAP SOAT. Criado na Fase 3, é um dos **cinco repositórios** da solução da Fase 4 e a **porta de entrada** de toda a aplicação: além das funções, provisiona o **API Gateway** que roteia o tráfego para elas e para os três microsserviços no cluster.
+
+A visão geral da solução (os cinco repositórios, o diagrama da arquitetura, a divisão dos serviços e a Saga) está no [README do OS Service](https://github.com/fiap-soat-oficina-tech-challenge/tech-challenge-fiap#a-solução-na-fase-4).
+
+| Repositório | Papel |
+|---|---|
+| [`tech-challenge-fiap`](https://github.com/fiap-soat-oficina-tech-challenge/tech-challenge-fiap) | OS Service e orquestrador da Saga |
+| [`oficina-billing-service`](https://github.com/fiap-soat-oficina-tech-challenge/oficina-billing-service) | Billing Service |
+| [`oficina-execution-service`](https://github.com/fiap-soat-oficina-tech-challenge/oficina-execution-service) | Execution Service |
+| [`tc3-infra-k8s`](https://github.com/fiap-soat-oficina-tech-challenge/tc3-infra-k8s) | Plataforma: VPC, EKS, observabilidade e o workflow do ambiente |
+| **`tc3-auth-lambda`** (este) | API Gateway e Lambdas de autenticação e de e-mail |
 
 Contém **duas** AWS Lambda, atrás do **mesmo API Gateway**:
 
 | Função | Rota | Papel |
 |---|---|---|
-| **Autenticação por CPF** | `POST /auth` | Valida o CPF, confirma que o cliente existe e está **ATIVO** no banco e devolve um **JWT** aceito pela API da oficina. |
-| **Notificações por e-mail** | `POST /mail` | Recebe uma solicitação autenticada da API e envia o e-mail (orçamento, finalização, entrega) via **SMTP**. Isola o SMTP fora da aplicação — é a peça "serverless de notificações" da fase. |
+| **Autenticação por CPF** | `POST /auth` | Valida o CPF, confirma no **OS Service** que o cliente existe e está **ATIVO** e devolve um **JWT** aceito pelos serviços da oficina. |
+| **Notificações por e-mail** | `POST /mail` | Recebe uma solicitação autenticada de um serviço e envia o e-mail via **SMTP**: orçamento e QR Code de pagamento (Billing), finalização e entrega (OS). Isola o SMTP fora dos serviços. |
 
-As rotas protegidas da aplicação também passam por este API Gateway (`ANY /{proxy+}` → ALB via VPC Link).
+As rotas protegidas da aplicação também passam por este API Gateway (`ANY /{proxy+}` → ALB via VPC Link). Na Fase 4, o mesmo ALB atende os três microsserviços: o OS Service nas rotas sem prefixo, o Billing em `/billing` e o Execution em `/execution`.
 
 ## Arquitetura
 
@@ -19,13 +29,12 @@ graph TB
 
     subgraph AWS["AWS · us-east-1"]
         GW["<b>API Gateway</b> (HTTP API v2)<br/>POST /auth · POST /mail<br/>ANY /&#123;proxy+&#125; → ALB (VPC Link)"]
-        SSM["<b>SSM Parameter Store</b><br/>JWT_SECRET · MAIL_API_TOKEN<br/>MAIL_HOST/PORT/USER/PASS (SecureString)"]
+        SSM["<b>SSM Parameter Store</b><br/>JWT_SECRET · MAIL_API_TOKEN · INTERNAL_API_TOKEN<br/>MAIL_HOST/PORT/USER/PASS (SecureString)<br/>API_GATEWAY_URL"]
+        Auth["<b>Lambda — auth</b><br/>valida CPF · busca o cliente no OS<br/>assina JWT (HS256)"]
 
         subgraph VPC["VPC — subnets privadas"]
-            Auth["<b>Lambda — auth</b><br/>valida CPF · consulta cliente<br/>assina JWT (HS256)"]
             Mail["<b>Lambda — e-mail</b><br/>valida token · envia via SMTP"]
-            ALB["<b>ALB</b> → API no EKS<br/>(repo tech-challenge-fiap)"]
-            RDS[("<b>RDS PostgreSQL</b><br/>gerenciado · TLS")]
+            ALB["<b>ALB</b> → serviços no EKS<br/>OS Service (cadastro de clientes)"]
         end
     end
 
@@ -33,8 +42,8 @@ graph TB
 
     Cliente -->|"POST /auth &#123;cpf&#125;"| GW
     GW -->|"/auth"| Auth
-    Auth -->|"SELECT cliente (TLS)"| RDS
-    Auth -->|"lê JWT_SECRET"| SSM
+    Auth -->|"lê INTERNAL_API_TOKEN"| SSM
+    Auth -->|"POST /internal/clientes/busca<br/>+ x-internal-token"| GW
     Auth -->|"JWT { token, cliente }"| Cliente
 
     Cliente -->|"Bearer JWT (rotas protegidas)"| GW
@@ -47,30 +56,33 @@ graph TB
     Mail -->|"envia e-mail"| SMTP
 ```
 
-O ponto-chave do desenho: a **autenticação é desacoplada por segredo compartilhado**. A Lambda de auth *emite* o JWT; a API no EKS apenas o *valida* com o **mesmo segredo** (lido do SSM) — as duas nunca se chamam. A notificação, ao contrário, é uma chamada síncrona: a API faz `POST /mail` com um token interno, e a Lambda de e-mail encapsula o SMTP.
+O ponto-chave do desenho: a **autenticação é desacoplada por segredo compartilhado**. A Lambda de auth *emite* o JWT; os serviços no EKS apenas o *validam* com o **mesmo segredo** (lido do SSM), sem chamar a função. Para emitir, a Lambda pergunta ao OS Service, dono do cadastro de clientes, pela rota interna `POST /internal/clientes/busca`: na Fase 4 nenhum componente lê o banco de outro serviço. A notificação é uma chamada síncrona no sentido contrário: o serviço faz `POST /mail` com um token interno, e a Lambda de e-mail encapsula o SMTP.
 
 ## O que este repositório cria (Terraform)
 
 | Recurso | Detalhe |
 |---|---|
-| `aws_lambda_function.auth` | Node.js 22, dentro da VPC para alcançar o RDS |
+| `aws_lambda_function.auth` | Node.js 22, fora da VPC: não acessa banco, consulta o OS Service pela rota interna |
 | `aws_lambda_function.mail` | Node.js 22, envia e-mail via SMTP (nodemailer) |
 | API Gateway HTTP API v2 | Rotas `POST /auth`, `POST /mail` e `ANY /{proxy+}` (VPC Link → ALB) |
 | `aws_ssm_parameter.jwt_secret` | Segredo do JWT (HS256), gerado pelo Terraform — o **mesmo** que a API valida |
 | `aws_ssm_parameter.mail_api_token` | Token interno (`random_password`) entre a API e a rota `/mail` |
+| `aws_ssm_parameter.api_gateway_url` | Endereço do API Gateway (`API_GATEWAY_URL`), lido pelo CD dos serviços para montar as URLs da Lambda de e-mail e do aviso do Mercado Pago |
 | Parâmetros SSM de SMTP | `MAIL_HOST`, `MAIL_PORT`, `MAIL_USER`, `MAIL_PASS` (config do provedor de e-mail) |
-| Security groups | Liberam a Lambda de auth no Postgres |
+| Security group | Usado pela Lambda de e-mail e pelo VPC Link |
 | Log groups + New Relic | Observabilidade das duas funções (ver seção abaixo) |
 
 ## Tecnologias
 
-TypeScript · Node.js 22 · `pg` · `jsonwebtoken` · `nodemailer` · `@aws-sdk/client-ssm` · esbuild · Terraform ≥ 1.10 · AWS Lambda · API Gateway HTTP v2 · GitHub Actions (OIDC)
+TypeScript · Node.js 22 · `jsonwebtoken` · `nodemailer` · `@aws-sdk/client-ssm` · esbuild · Terraform ≥ 1.10 · AWS Lambda · API Gateway HTTP v2 · GitHub Actions (OIDC)
 
 ## Dependências entre repositórios
 
-Depende de [`tc3-infra-k8s`](https://github.com/tiagostorch/tc3-infra-k8s) (rede/VPC, ALB, bootstrap OIDC) e de [`tc3-infra-db`](https://github.com/tiagostorch/tc3-infra-db) (banco, `DATABASE_URL` e o **prefixo do SSM**), lidos via `terraform_remote_state`. **Aplique os dois antes.**
+Depende de [`tc3-infra-k8s`](https://github.com/fiap-soat-oficina-tech-challenge/tc3-infra-k8s) (rede/VPC, cluster, bootstrap OIDC), lido via `terraform_remote_state`. **Aplique-o antes.** O prefixo do SSM (`/tc3-oficina/homolog`) é montado aqui a partir de `project_name` e `environment`, os mesmos valores das outras stacks.
 
-> **Pré-requisito de schema:** a coluna `status` em `Cliente` precisa existir (ajuste de modelagem desta fase, feito no repo [`tech-challenge-fiap`](https://github.com/LucasValada/tech-challenge-fiap)). Sem ela a consulta da Lambda de auth falha.
+> **Em runtime**, a autenticação depende do OS Service ([`tech-challenge-fiap`](https://github.com/fiap-soat-oficina-tech-challenge/tech-challenge-fiap)) no ar e do parâmetro `INTERNAL_API_TOKEN`, gerado pelo `terraform/` daquele repositório. Os dois são lidos na invocação, não no `apply`, então a ordem de aplicação não muda.
+
+> **Rota `ANY /{proxy+}`:** o ALB dos serviços é criado pelo AWS Load Balancer Controller no primeiro deploy de um Ingress do grupo `oficina`, e o Terraform o encontra pelas tags (`elbv2.k8s.aws/cluster` e `ingress.k8s.aws/stack`). Num ambiente novo, o primeiro `apply` sobe só `/auth` e `/mail` e publica o `API_GATEWAY_URL`, que os deploys dos serviços leem; depois dos deploys, um segundo `apply` cria o VPC Link e a rota. Não há ARN para copiar.
 
 ---
 
@@ -78,7 +90,9 @@ Depende de [`tc3-infra-k8s`](https://github.com/tiagostorch/tc3-infra-k8s) (rede
 
 O cliente da oficina autentica pelo CPF; a API do cluster protege as rotas sensíveis com o JWT emitido aqui.
 
-**Fluxo:** `POST /auth {cpf}` → valida os dígitos verificadores → consulta o cliente no RDS (existe? **ATIVO**?) → assina um **JWT HS256** com o segredo do SSM → devolve `{ token, cliente }`. A API no EKS valida esse token com o mesmo segredo, sem chamar a função.
+**Fluxo:** `POST /auth {cpf}` → valida os dígitos verificadores → busca o cliente no OS Service (`POST /internal/clientes/busca`, CPF no corpo e não na URL, header `x-internal-token`) → confere se existe e está **ATIVO** → assina um **JWT HS256** com o segredo do SSM → devolve `{ token, cliente }`. Os serviços no EKS validam esse token com o mesmo segredo, sem chamar a função.
+
+A chamada ao OS tem **timeout de 4 s e uma nova tentativa** quando a falha pode passar sozinha (timeout, erro de rede, 5xx). Um 4xx não é repetido: é token errado ou pedido inválido. O token é lido do SSM na primeira invocação e fica em cache na instância, só em caso de sucesso. O `x-correlation-id` vai junto, então o login aparece nos logs dos dois lados com o mesmo id.
 
 ```bash
 curl -X POST "$AUTH_URL" -H 'content-type: application/json' \
@@ -98,7 +112,7 @@ O token carrega `{ sub: <clienteId>, nome, tipo: "cliente" }`.
 | `400` | CPF ausente, malformado ou com dígito verificador inválido |
 | `404` | CPF válido, mas sem cliente correspondente |
 | `403` | Cliente encontrado, porém **inativo** |
-| `500` | Falha ao consultar o banco |
+| `500` | Falha ao consultar o cliente no OS Service (indisponível depois da nova tentativa, token recusado ou resposta fora do contrato) |
 
 ## Função 2 — Notificações por e-mail (`POST /mail`)
 
@@ -115,15 +129,30 @@ curl -X POST "$MAIL_URL" \
 { "message": "Email enviado com sucesso." }
 ```
 
+Dois campos opcionais permitem um e-mail com imagem — o Billing manda assim o QR Code de pagamento:
+
+- `html`: versão em HTML do e-mail; o `text` continua obrigatório, para clientes de e-mail que só mostram texto.
+- `attachments`: até 3 imagens (`image/png` ou `image/jpeg`), cada uma com `filename`, `contentType`, `content` em base64 (até 512 KB) e, opcionalmente, `cid`. Com `cid`, a imagem aparece no corpo pelo `<img src="cid:...">` do `html`.
+
+```json
+{
+  "to": "cliente@exemplo.com",
+  "subject": "Pagamento da OS OS-2026-000001",
+  "text": "...",
+  "html": "<p>...</p><img src=\"cid:qrcode-pagamento\" alt=\"QR Code de pagamento\">",
+  "attachments": [{ "filename": "qrcode.png", "contentType": "image/png", "content": "<base64>", "cid": "qrcode-pagamento" }]
+}
+```
+
 | Status | Situação |
 |---|---|
 | `200` | E-mail enviado |
-| `400` | Corpo inválido — `to`, `subject` e `text` são obrigatórios |
+| `400` | Corpo inválido — `to`, `subject` e `text` são obrigatórios; `html` vazio ou `attachments` fora do formato acima |
 | `401` | `x-mail-api-token` ausente ou incorreto |
 | `405` | Método diferente de `POST` |
 | `500` | Falha ao ler a config no SSM ou ao enviar via SMTP |
 
-> Quem chama esta rota é a **API da oficina**, de forma **best-effort**: uma falha aqui é logada, mas não bloqueia a transição de status da OS. Detalhe da integração no README do repo [`tech-challenge-fiap`](https://github.com/LucasValada/tech-challenge-fiap#notificações-por-e-mail-lambda).
+> Quem chama esta rota são o **OS Service** e o **Billing Service**, de forma **best-effort**: uma falha aqui é logada, mas não bloqueia a transição de status da OS nem a operação do orçamento. Detalhe da integração no README do repo [`tech-challenge-fiap`](https://github.com/fiap-soat-oficina-tech-challenge/tech-challenge-fiap#notificações-por-e-mail-lambda).
 
 ---
 
@@ -131,7 +160,7 @@ curl -X POST "$MAIL_URL" \
 
 ```bash
 npm ci
-npm test          # testes: validação de CPF, handler de e-mail e observabilidade
+npm test          # testes: validação de CPF, busca do cliente no OS, handler de e-mail e observabilidade
 npm run lint      # tsc --noEmit
 npm run package   # gera auth-lambda.zip e mail-lambda.zip (esbuild)
 ```
@@ -170,6 +199,8 @@ Endereços saem nos outputs (`terraform output`):
 
 > **Ambiente único:** `develop` e `main` aplicam no **mesmo** ambiente na AWS (mesmo state e recursos) — a distinção homologação/produção é apenas o rótulo do deploy no GitHub e foi desconsiderada.
 
+A `main` é protegida: merge apenas via Pull Request, com uma aprovação e os checks `Lint & Test` e `Terraform Plan` verdes. Na subida completa do ambiente, este Terraform também é aplicado pelo workflow **Ambiente** do [`tc3-infra-k8s`](https://github.com/fiap-soat-oficina-tech-challenge/tc3-infra-k8s#subir-e-derrubar-o-ambiente-inteiro), depois da plataforma.
+
 Secrets necessários: `AWS_ROLE_ARN` e `TF_STATE_BUCKET` (do bootstrap em `tc3-infra-k8s`) e `NEW_RELIC_ACCOUNT_ID`. A ARN da layer do New Relic entra como *variable* do repositório (`NEWRELIC_LAYER_ARN`) — é valor público. A **license key** não passa pelo CI nem pelo Terraform: a função recebe só o **nome** do parâmetro no SSM (`NEW_RELIC_LICENSE_KEY_SSM_PARAMETER_NAME`) e a extension lê a chave em runtime.
 
 Localmente, os valores ficam no `.env` da raiz (ignorado pelo git): `set -a; source .env; set +a` antes do `terraform plan`.
@@ -192,14 +223,14 @@ curl -si -X POST "$(terraform -chdir=infra output -raw auth_url)" \
   -H 'content-type: application/json' -d '{"cpf":"<cpf>"}' | grep -i traceresponse
 ```
 
-A ARN da layer muda por região e versão do agente e vai em `newrelic_layer_arn` (lista em <https://layers.newrelic-external.com>). O detalhamento — tabela completa de variáveis e NRQL — está em [`tc3-infra-k8s/OBSERVABILIDADE.md`](https://github.com/tiagostorch/tc3-infra-k8s/blob/main/OBSERVABILIDADE.md).
+A ARN da layer muda por região e versão do agente e vai em `newrelic_layer_arn` (lista em <https://layers.newrelic-external.com>). O detalhamento — tabela completa de variáveis e NRQL — está em [`tc3-infra-k8s/OBSERVABILIDADE.md`](https://github.com/fiap-soat-oficina-tech-challenge/tc3-infra-k8s/blob/main/OBSERVABILIDADE.md).
 
 ## Decisões registradas
 
-- **`pg` em vez do Prisma na Lambda** — o engine do Prisma pesa dezenas de MB e encarece o cold start; a função de auth faz uma única consulta, o driver puro basta.
-- **Função de auth dentro da VPC** — obrigatório para alcançar um RDS não público; o custo é um cold start maior, aceitável para o volume.
+- **Cliente pela rota interna do OS, e não pelo banco** (Fase 4) — cada microsserviço tem banco próprio e nenhum outro componente o lê direto. A rota é `POST` para o CPF ir no corpo, e não na URL, que vai para os logs.
+- **Função de auth fora da VPC** — sem banco para alcançar, a VPC só acrescentaria cold start. A rota interna é chamada pelo endereço público do API Gateway, protegida pelo token do SSM.
 - **Segredo compartilhado (HS256)** — mais simples que JWKS para o escopo da fase; a API valida localmente, sem round-trip.
 - **SMTP na Lambda de e-mail, config no SSM** — isola o provedor de e-mail da aplicação; trocar Ethereal por SES não toca no código do app.
 - **Token interno na rota `/mail`** (`x-mail-api-token`, `timingSafeEqual`) — a rota não é pública; só a API com o token do SSM a chama.
 
-Estas decisões viram ADRs na documentação oficial da entrega (repo [`tech-challenge-fiap`](https://github.com/LucasValada/tech-challenge-fiap)).
+A estratégia de autenticação completa, com alternativas e riscos, está na [RFC-001](https://github.com/fiap-soat-oficina-tech-challenge/tech-challenge-fiap/blob/main/docs/rfc/RFC-001-estrategia-autenticacao.md) do repositório do OS Service.

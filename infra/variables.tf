@@ -63,16 +63,6 @@ variable "lambda_timeout_seconds" {
   default = 15
 }
 
-variable "alb_listener_arn" {
-  description = <<-EOT
-    Listener do ALB criado pelo Ingress da aplicação no EKS. Enquanto vazio, o
-    Gateway expõe apenas a rota de autenticação; preenchido, passa a rotear
-    também as rotas protegidas via VPC Link.
-  EOT
-  type        = string
-  default     = ""
-}
-
 # ─── Observabilidade ────────────────────────────────────────────────────────
 
 variable "newrelic_enabled" {
@@ -117,7 +107,7 @@ variable "newrelic_account_id" {
 variable "newrelic_tags" {
   description = <<-EOT
     Tags padrão do projeto em toda telemetria da função (logs e invocações).
-    Os mesmos valores de `newrelic_tags` em tc3-infra-k8s e tc3-infra-db e de
+    Os mesmos valores de `newrelic_tags` em tc3-infra-k8s e no terraform/ do OS e de
     NEW_RELIC_LABELS no ConfigMap da aplicação — é por elas que os alertas e
     dashboards filtram. Separadas de `environment`, que compõe nomes de recurso.
   EOT
